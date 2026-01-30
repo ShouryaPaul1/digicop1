@@ -83,9 +83,9 @@ export default {
         },
       },
       fontFamily: {
-        display: ["var(--font-display)"],
-        body: ["var(--font-body)"],
-        sans: ["var(--font-sans)"],
+        display: ["Montserrat", "var(--font-display)"],
+        body: ["Montserrat", "var(--font-body)"],
+        sans: ["Montserrat", "var(--font-sans)"],
         serif: ["var(--font-serif)"],
         mono: ["var(--font-mono)"],
       },

@@ -162,37 +162,8 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* STRATEGIC FIT SECTION */}
-      <section id="strategy" className="py-24 relative">
-        <div className="container mx-auto px-4 md:px-8">
-          <SectionHeading 
-            title="Strategic Impact" 
-            subtitle="Why municipalities are switching to Digi-Cop."
-          />
+      {/* STRATEGIC FIT SECTION REMOVED */}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            <Card className="bg-gradient-to-br from-card to-card/50 border-white/10 p-8 hover:border-primary/30 transition-all group">
-              <div className="mb-6 bg-primary/10 w-16 h-16 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                <Database className="w-8 h-8 text-primary" />
-              </div>
-              <h3 className="text-2xl font-bold text-white mb-4">Revenue Generation</h3>
-              <p className="text-muted-foreground leading-relaxed">
-                Self-funding model through citation revenue. Our system catches 3x more violations during night hours than manual patrols, creating a sustainable revenue stream for road maintenance and safety programs.
-              </p>
-            </Card>
-
-            <Card className="bg-gradient-to-br from-card to-card/50 border-white/10 p-8 hover:border-primary/30 transition-all group">
-              <div className="mb-6 bg-green-500/10 w-16 h-16 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                <Shield className="w-8 h-8 text-green-500" />
-              </div>
-              <h3 className="text-2xl font-bold text-white mb-4">Safety First</h3>
-              <p className="text-muted-foreground leading-relaxed">
-                The primary goal is saving lives. Visible enforcement technology changes driver behavior. Pilot cities saw a 40% reduction in night-time speeding incidents within 6 months of installation.
-              </p>
-            </Card>
-          </div>
-        </div>
-      </section>
 
       <ContactSection />
       

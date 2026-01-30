@@ -1,0 +1,489 @@
+# Replit **Agent** instructions — ready-to-copy (server + endpoints)
+
+Below is a complete, copy-paste ready instruction + server code for the Replit "agent" (backend) that will:
+
+* accept a **demo video upload** (from the Home page demo) and store it securely, returning a playable URL, hash and metadata, and
+* accept **contact form** submissions from the About page and forward/save them (email via SMTP + saved JSON).
+
+Follow these steps exactly in a new Replit Node.js Repl. All files and code are included below.
+
+---
+
+## 1) Create a new Repl
+
+Template: **Node.js** (not Python). Name: `digi-cop-agent` or similar.
+
+---
+
+## 2) Add Replit Secrets (Environment variables)
+
+Open the Replit Secrets panel and create these values:
+
+* `SMTP_HOST` — your SMTP host (e.g., smtp.sendgrid.net)
+* `SMTP_PORT` — SMTP port (e.g., 587)
+* `SMTP_USER` — SMTP username
+* `SMTP_PASS` — SMTP password
+* `CONTACT_NOTIFY_EMAIL` — email address that receives contact submissions
+* `ADMIN_API_KEY` — (optional) an API key to protect administrative calls (you can leave blank while testing)
+
+> Note: To keep things minimal, the upload endpoint is public by default; if you want uploads restricted to authenticated devices/partners, require `x-api-key: <ADMIN_API_KEY>` in requests (example code includes an optional check).
+
+---
+
+## 3) Create files — copy/paste the exact contents
+
+### `package.json`
+
+```json
+{
+  "name": "digi-cop-agent",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "express-rate-limit": "^6.8.0",
+    "multer": "^1.4.5-lts.1",
+    "nodemailer": "^6.9.3",
+    "crypto": "^1.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
+```
+
+---
+
+### `server.js`
+
+```js
+// server.js - Replit Agent backend for demo uploads + contact form
+const express = require('express');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const nodemailer = require('nodemailer');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Basic middleware
+app.use(cors());
+app.use(express.json());
+
+// Rate limiting to prevent abuse
+const limiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30, // max 30 requests per minute per IP
+});
+app.use('/api/', limiter);
+
+// create directories if missing
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const META_DIR = path.join(__dirname, 'meta');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
+if (!fs.existsSync(META_DIR)) fs.mkdirSync(META_DIR);
+
+// Multer storage (store temporarily in memory then write with hash-based name)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50 MB max file size
+  },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['video/mp4', 'video/webm', 'video/ogg'];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error('Only mp4/webm/ogg video allowed'));
+    }
+    cb(null, true);
+  }
+});
+
+// Optional API key middleware — uncomment usage below if you want to require ADMIN_API_KEY
+function requireApiKey(req, res, next) {
+  const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
+  if (!ADMIN_API_KEY) return next(); // no key set -> allow
+  const incoming = req.get('x-api-key') || req.query.api_key;
+  if (incoming === ADMIN_API_KEY) return next();
+  return res.status(401).json({ error: 'Unauthorized' });
+}
+
+/**
+ * POST /api/upload-demo
+ * - Accepts form-data with field `video` (file), optional `plate` and `meta` fields.
+ * - Saves file under /uploads with filename: <sha256>-<ts>.<ext>.
+ * - Saves a metadata JSON in /meta with details (hash, originalName, size, mimetype, savedPath, timestamp).
+ * - Returns JSON: { url, hash, filename, ts, originalName }
+ */
+app.post('/api/upload-demo', requireApiKey, upload.single('video'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No video uploaded' });
+
+    // compute sha256 hash of buffer
+    const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+    const ts = Date.now();
+    const ext = mimeExt(req.file.mimetype) || path.extname(req.file.originalname) || '.mp4';
+    const safeFilename = `${hash}-${ts}${ext}`;
+    const outPath = path.join(UPLOAD_DIR, safeFilename);
+
+    // write file to disk
+    fs.writeFileSync(outPath, req.file.buffer);
+
+    // metadata
+    const metadata = {
+      hash,
+      originalName: req.file.originalname,
+      filename: safeFilename,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      savedPath: `/uploads/${safeFilename}`,
+      ts,
+      extra: req.body || {}
+    };
+    fs.writeFileSync(path.join(META_DIR, `${hash}-${ts}.json`), JSON.stringify(metadata, null, 2));
+
+    // response includes playable URL (served statically at /uploads)
+    return res.json({
+      success: true,
+      url: metadata.savedPath,
+      hash,
+      filename: safeFilename,
+      originalName: metadata.originalName,
+      ts
+    });
+  } catch (err) {
+    console.error('upload error', err);
+    return res.status(500).json({ error: err.message || 'Upload failed' });
+  }
+});
+
+/**
+ * POST /api/contact
+ * - Accepts JSON: { name, email, message }
+ * - Validates fields, saves to messages file, and sends a notification email (SMTP)
+ */
+app.post('/api/contact', async (req, res) => {
+  try {
+    const { name, email, message } = req.body || {};
+    if (!name || !email || !message) {
+      return res.status(400).json({ error: 'name, email and message are required' });
+    }
+
+    // save locally
+    const entry = {
+      id: crypto.randomUUID(),
+      name,
+      email,
+      message,
+      ts: Date.now()
+    };
+    const messagesFile = path.join(META_DIR, 'contacts.json');
+    let arr = [];
+    if (fs.existsSync(messagesFile)) {
+      arr = JSON.parse(fs.readFileSync(messagesFile));
+    }
+    arr.push(entry);
+    fs.writeFileSync(messagesFile, JSON.stringify(arr, null, 2));
+
+    // Send notification email (if SMTP configured)
+    const notifyEmail = process.env.CONTACT_NOTIFY_EMAIL;
+    const smtpHost = process.env.SMTP_HOST;
+    if (smtpHost && notifyEmail) {
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: Number(process.env.SMTP_PORT || 587),
+        secure: false,
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS
+        }
+      });
+
+      const mailOptions = {
+        from: `"Digi-Cop Website" <${process.env.SMTP_USER}>`,
+        to: notifyEmail,
+        subject: `New contact form submission: ${entry.name}`,
+        text: `Name: ${entry.name}\nEmail: ${entry.email}\nMessage:\n${entry.message}\n\nID: ${entry.id}`
+      };
+
+      transporter.sendMail(mailOptions).catch(e => console.error('mail error', e));
+    }
+
+    return res.json({ success: true, id: entry.id });
+  } catch (err) {
+    console.error('contact error', err);
+    return res.status(500).json({ error: 'contact failed' });
+  }
+});
+
+// Serve uploaded files statically
+app.use('/uploads', express.static(UPLOAD_DIR, { index: false }));
+
+// Serve static site files from ./public
+const PUBLIC_DIR = path.join(__dirname, 'public');
+if (!fs.existsSync(PUBLIC_DIR)) fs.mkdirSync(PUBLIC_DIR);
+app.use(express.static(PUBLIC_DIR));
+
+// Fallback to index.html for client-side routing (if using SPA)
+app.get('*', (req, res) => {
+  const p = path.join(PUBLIC_DIR, 'index.html');
+  if (fs.existsSync(p)) return res.sendFile(p);
+  return res.status(404).send('Not found');
+});
+
+// Utility to map mime to extension
+function mimeExt(mime) {
+  if (!mime) return '';
+  if (mime.includes('mp4')) return '.mp4';
+  if (mime.includes('webm')) return '.webm';
+  if (mime.includes('ogg')) return '.ogv';
+  return '';
+}
+
+app.listen(PORT, () => {
+  console.log(`Digi-Cop agent running on port ${PORT}`);
+});
+```
+
+---
+
+### `public/index.html` (Home — demo upload)
+
+```html
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Digi-Cop — Demo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:Inter,system-ui,Arial;margin:0;padding:32px;background:#f7fafc;}
+    .container{max-width:900px;margin:0 auto}
+    .hero{background:#071a2f;color:white;padding:40px;border-radius:12px}
+    .uploader{margin-top:20px;padding:24px;background:white;border-radius:8px}
+    .progress{height:10px;background:#e2e8f0;border-radius:6px;overflow:hidden}
+    .bar{height:100%;width:0%}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="hero">
+      <h1>Digi-Cop demo uploader</h1>
+      <p>Upload a short night-time clip (mp4/webm). The agent stores the file and returns a secure URL to play the video.</p>
+    </div>
+
+    <div class="uploader">
+      <label>Choose video (max 50MB):</label><br/>
+      <input type="file" id="videoInput" accept="video/*" />
+      <div style="margin-top:12px;">
+        <button id="uploadBtn">Upload</button>
+        <span id="status" style="margin-left:12px"></span>
+      </div>
+      <div style="margin-top:12px;">
+        <div class="progress"><div class="bar" id="bar" style="background:#06b6d4;"></div></div>
+      </div>
+
+      <div id="result" style="margin-top:16px"></div>
+    </div>
+
+    <div style="margin-top:32px">
+      <a href="/about.html">About & Contact</a>
+    </div>
+  </div>
+
+  <script>
+    const input = document.getElementById('videoInput');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const status = document.getElementById('status');
+    const bar = document.getElementById('bar');
+    const result = document.getElementById('result');
+
+    uploadBtn.onclick = async () => {
+      const f = input.files[0];
+      if (!f) { alert('Select a file'); return; }
+      if (f.size > 50 * 1024 * 1024) { alert('File too large (50MB max)'); return; }
+
+      const form = new FormData();
+      form.append('video', f);
+      // optional fields: plate, deviceId etc.
+      form.append('meta', JSON.stringify({ uploader: 'web-demo' }));
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload-demo', true);
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          bar.style.width = pct + '%';
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          const data = JSON.parse(xhr.responseText);
+          status.textContent = 'Upload complete';
+          result.innerHTML = `<p>URL: <a href="${data.url}" target="_blank">${data.url}</a></p>
+                              <video controls style="max-width:100%;height:auto"><source src="${data.url}"></video>`;
+        } else {
+          status.textContent = 'Upload failed';
+          alert('Upload failed: ' + xhr.responseText);
+        }
+      };
+
+      xhr.onerror = () => { status.textContent = 'Upload error'; };
+
+      xhr.send(form);
+      status.textContent = 'Uploading...';
+    };
+  </script>
+</body>
+</html>
+```
+
+---
+
+### `public/about.html` (About + contact form — second page)
+
+```html
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Digi-Cop — About</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:Inter,system-ui,Arial;margin:0;padding:32px;background:#fff;}
+    .wrap{max-width:900px;margin:0 auto}
+    .card{padding:24px;border-radius:10px;background:#f8fafc;margin-bottom:20px}
+    label{display:block;margin-top:10px}
+    input,textarea{width:100%;padding:8px;border-radius:6px;border:1px solid #d1d5db}
+    button{margin-top:12px;padding:10px 14px;background:#06b6d4;border:0;color:white;border-radius:8px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>About Digi-Cop</h1>
+    <div class="card">
+      <p><strong>Mission:</strong> Reduce night-time road accidents by detecting headlight/tail light and high-beam violations using edge computer vision and reporting verified evidence to traffic authorities.</p>
+      <p><strong>How it works (short):</strong> On-board camera detects violation → short clip + plate image captured → evidence hashed and reported securely to traffic platform → enforcement follows.</p>
+    </div>
+
+    <div class="card">
+      <h3>Contact / Request Pilot</h3>
+      <form id="contactForm">
+        <label>Name</label>
+        <input name="name" required />
+        <label>Email</label>
+        <input name="email" type="email" required />
+        <label>Message</label>
+        <textarea name="message" rows="4" required></textarea>
+        <button type="submit">Send</button>
+      </form>
+      <div id="cfStatus"></div>
+    </div>
+
+    <div><a href="/">Back to Demo</a></div>
+  </div>
+
+  <script>
+    const form = document.getElementById('contactForm');
+    const statusEl = document.getElementById('cfStatus');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(form);
+      const body = {
+        name: formData.get('name'),
+        email: formData.get('email'),
+        message: formData.get('message')
+      };
+      statusEl.textContent = 'Sending...';
+      try {
+        const res = await fetch('/api/contact', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.success) {
+          statusEl.textContent = 'Thanks! We will reach out soon.';
+          form.reset();
+        } else {
+          statusEl.textContent = 'Error: ' + (data.error || 'unknown');
+        }
+      } catch (err) {
+        statusEl.textContent = 'Send failed';
+      }
+    });
+  </script>
+</body>
+</html>
+```
+
+---
+
+## 4) Once files are in place
+
+* Replit will install dependencies from `package.json`. If not, run `npm install`.
+* Create `uploads/` and `meta/` directories (server will create them automatically on first run if missing).
+* Run `npm start` (or use Replit's run button). The console will show the port. Replit provides a public URL for the running Repl.
+
+---
+
+## 5) Testing the flow (quick checks)
+
+* Visit the Repl URL root: you should see the Home demo page.
+* Try uploading a small mp4 (under 50MB). After upload, you will see a video player linked to `/uploads/<filename>`.
+* Go to About page and submit contact form — check your notify email (if SMTP configured). Check `meta/contacts.json` for saved entries.
+
+---
+
+## 6) Security & production notes (must-read)
+
+* **File limits:** current config caps at 50MB. For production, consider lower (10–20MB) and transcode client-side or with a media service (Cloudinary or S3 + Lambda).
+* **Virus/malware scanning:** Replit does not run AV scanning; for production, upload to a secure storage + run AV/validation or use a managed media service.
+* **Auth:** If only partners/devices should upload clips, enable `ADMIN_API_KEY` and require it in upload requests. The code includes an optional middleware `requireApiKey`. Set an ADMIN_API_KEY secret and the client must set header `x-api-key`.
+* **Tamper resistance:** The server computes SHA-256 of the video bytes at upload. For stronger chain-of-custody, sign metadata with an HMAC and store signed copy on an immutable ledger or push to authority endpoint.
+* **Retention & privacy:** Add a policy explaining how long uploads are stored. Implement automated cleanup (cron job) to delete old uploads and metadata if required.
+* **HTTPS:** Replit serves your Repl over HTTPS automatically. Always use HTTPS for upload.
+
+---
+
+## 7) Frontend integration examples
+
+* The included `public/index.html` and `public/about.html` already show the exact fetch/XHR code used to call the agent endpoints. Use those as-is in your two-page site or replace with React/Vite components while keeping the same `/api/upload-demo` and `/api/contact` calls.
+
+---
+
+## 8) Optional improvements (next steps)
+
+* Add server-side video processing with `ffmpeg` to extract duration, thumbnail, re-encode (requires adding `ffmpeg` binary to Repl or using an external service).
+* Add authentication (JWT) for partner devices.
+* Add evidence verification endpoint that assembles a signed evidence package (video, plate image, metadata, HMAC).
+* Add DB (sqlite or external) for structured storage rather than JSON files.
+
+---
+
+## 9) Troubleshooting
+
+* **Upload error "only mp4/webm/ogg allowed"** — check your file's mime type; re-encode if necessary.
+* **Large file aborted** — file over 50MB; reduce size or increase `limits.fileSize` in multer (not recommended).
+* **Emails not delivered** — confirm SMTP_* secrets are correct and that provider allows "from" email.
+
+---
+
+If you want, I can now:
+
+* paste a Replit-ready `README.md` (with run/run-dev commands) and full `gitignore`, or
+* generate a React + Vite version of the two pages using the same endpoints (client code and components), or
+* add `ADMIN_API_KEY` enforcement and a sample device upload script (curl + sample headers).
+
+Tell me which of those to produce and I will output the exact files to paste into Replit.

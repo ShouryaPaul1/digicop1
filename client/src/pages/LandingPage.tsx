@@ -4,7 +4,8 @@ import { Footer } from "@/components/Footer";
 import { SectionHeading } from "@/components/SectionHeading";
 import { ContactSection } from "@/components/ContactSection";
 import { motion } from "framer-motion";
-import { AlertTriangle, Moon, Target, Shield, Zap, Server, Database, Check } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, Moon, Target, Shield, Zap, Server, Database, Check, Eye } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 
 export default function LandingPage() {
@@ -84,6 +85,24 @@ export default function LandingPage() {
               ))}
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* DEMO SECTION */}
+      <section id="demo" className="py-24 bg-black/20">
+        <div className="container mx-auto px-4 md:px-8">
+          <SectionHeading 
+            title="See It In Action" 
+            subtitle="Watch how Digi-Cop detects violations in real-time."
+          />
+          
+          <div className="mb-16">
+            <div className="rounded-xl overflow-hidden border border-white/10 shadow-2xl max-w-4xl mx-auto bg-black">
+              <video controls className="w-full aspect-video" src="/demo.mp4" />
+            </div>
+          </div>
+
+          <DemoUpload />
         </div>
       </section>
 
@@ -178,6 +197,99 @@ export default function LandingPage() {
       <ContactSection />
       
       <Footer />
+    </div>
+  );
+}
+
+function DemoUpload() {
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [result, setResult] = useState<any>(null);
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 50 * 1024 * 1024) {
+      alert('File too large (50MB max)');
+      return;
+    }
+
+    setUploading(true);
+    setProgress(0);
+    setResult(null);
+
+    const formData = new FormData();
+    formData.append('video', file);
+    formData.append('meta', JSON.stringify({ uploader: 'web-demo' }));
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload-demo', true);
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        setProgress(pct);
+      }
+    };
+
+    xhr.onload = () => {
+      setUploading(false);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const data = JSON.parse(xhr.responseText);
+        setResult(data);
+      } else {
+        alert('Upload failed: ' + xhr.responseText);
+      }
+    };
+
+    xhr.onerror = () => {
+      setUploading(false);
+      alert('Upload error');
+    };
+
+    xhr.send(formData);
+  };
+
+  return (
+    <div className="bg-card border border-white/10 p-8 rounded-xl max-w-2xl mx-auto mt-12">
+      <h3 className="text-xl font-bold text-white mb-4 text-center">Try the AI Detection (Demo)</h3>
+      <p className="text-muted-foreground mb-6 text-center">Upload a short night-time clip (max 50MB) to process.</p>
+      
+      <div className="space-y-6">
+        <div className="flex justify-center">
+            <input 
+            type="file" 
+            accept="video/mp4,video/webm,video/ogg"
+            onChange={handleUpload}
+            className="block w-full max-w-sm text-sm text-slate-500
+                file:mr-4 file:py-2 file:px-4
+                file:rounded-full file:border-0
+                file:text-sm file:font-semibold
+                file:bg-primary file:text-primary-foreground
+                hover:file:bg-primary/90 cursor-pointer"
+            />
+        </div>
+        
+        {uploading && (
+          <div className="h-2 bg-secondary rounded-full overflow-hidden w-full max-w-sm mx-auto">
+            <div 
+              className="h-full bg-primary transition-all duration-300" 
+              style={{ width: `${progress}%` }} 
+            />
+          </div>
+        )}
+
+        {result && (
+          <div className="mt-4 p-4 bg-background/50 rounded-lg animate-in fade-in slide-in-from-bottom-4">
+            <p className="text-green-500 mb-2 font-semibold text-center">Processing Complete!</p>
+            <video controls className="w-full rounded border border-white/10" src={result.url} />
+            <div className="mt-2 text-xs text-muted-foreground text-center">
+              <p>Filename: {result.originalName}</p>
+              <p>Hash: {result.hash.substring(0, 12)}...</p>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

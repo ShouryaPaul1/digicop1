@@ -58,9 +58,9 @@ export function ContactSection() {
             
             <div className="space-y-6">
               {[
-                { icon: Mail, label: "Email Us", value: "partnerships@digi-cop.ai" },
-                { icon: Phone, label: "Call Us", value: "+1 (555) 123-4567" },
-                { icon: MapPin, label: "HQ Location", value: "San Francisco, CA" },
+                { icon: Mail, label: "Email Us", value: "office@digicop.com" },
+                { icon: Phone, label: "Call Us", value: "9205098415" },
+                { icon: MapPin, label: "HQ Location", value: "Dwarka, Delhi" },
               ].map((item, i) => (
                 <div key={i} className="flex items-center gap-4 group">
                   <div className="w-12 h-12 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center group-hover:scale-110 transition-transform">
